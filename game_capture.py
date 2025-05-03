@@ -1,91 +1,54 @@
+import time
+from typing import Dict
+
+import cv2
 import mss
 import numpy as np
-import cv2
 import pygetwindow as gw
-import time
 
-def get_ruffle_window_region():
-    """Find the Ruffle player window with more robust detection"""
-    try:
-        # Try multiple common window title patterns
-        patterns = ['Ruffle', 'Flash', 'SWF', 'World\'s Hardest Game']
-        for pattern in patterns:
-            windows = gw.getWindowsWithTitle(pattern)
-            if windows:
-                window = windows[0]
-                
-                # Ensure window is visible and has reasonable size
-                if window.isMinimized:
-                    window.restore()
-                
-                # Add small border to avoid capturing window decorations
-                border = 5
-                region = {
-                    "top": window.top + border,
-                    "left": window.left + border,
-                    "width": max(window.width - 2*border, 100),
-                    "height": max(window.height - 2*border, 100)
-                }
-                
-                print(f"Found window: {window.title} at {region}")
-                return region
-        
-        # If no window found, try active window
-        active = gw.getActiveWindow()
-        if active:
-            print(f"Using active window: {active.title}")
-            return {
-                "top": active.top,
-                "left": active.left,
-                "width": active.width,
-                "height": active.height
-            }
-            
-    except Exception as e:
-        print(f"Window detection error: {e}")
-    
-    # Fallback dimensions
-    print("Using fallback screen region")
+_PATTERNS = ['Ruffle', 'Flash', 'SWF', "World's Hardest Game"]
+
+# ── locate the Ruffle window ─────────────────────────────────────────
+def get_ruffle_window_region() -> Dict[str, int]:
+    for p in _PATTERNS:
+        wins = gw.getWindowsWithTitle(p)
+        if wins:
+            w = wins[0]
+            if w.isMinimized:
+                w.restore()
+            b = 5
+            return {"top": w.top + b, "left": w.left + b,
+                    "width": max(w.width  - 2*b, 100),
+                    "height": max(w.height - 2*b, 100)}
     return {"top": 100, "left": 100, "width": 820, "height": 630}
 
+# ── grab one BGR frame ──────────────────────────────────────────────
 def capture_screen(region=None, retries=3):
-    """Capture screen with error handling and retries"""
+
     if region is None:
         region = get_ruffle_window_region()
-    
-    for attempt in range(retries):
+
+    for i in range(retries):
         try:
             with mss.mss() as sct:
-                # Add small delay between attempts
-                if attempt > 0:
-                    time.sleep(0.1)
-                
-                screenshot = sct.grab(region)
-                img = np.array(screenshot)
-                return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-                
+                shot = sct.grab(region)               # BGRA buffer
+                bgr  = np.frombuffer(shot.raw, np.uint8)  # raw = BGRA
+                bgr  = bgr.reshape(shot.height, shot.width, 4)[:, :, :3]
+                return bgr
         except Exception as e:
-            print(f"Capture attempt {attempt+1} failed: {e}")
-            if attempt == retries - 1:
-                raise
-                
-    return np.zeros((region['height'], region['width'], 3), dtype=np.uint8)
+            print(f"[mss] grab attempt {i+1} failed → {e}")
+            time.sleep(0.05)
 
+    return np.zeros((region['height'], region['width'], 3), np.uint8)
+
+# ── 84×84 grayscale for the agent ───────────────────────────────────
 def preprocess_frame(frame):
-    """Convert frame to grayscale and resize"""
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    resized = cv2.resize(gray, (84, 84))
-    return np.array(resized).flatten()
+    gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    small = cv2.resize(gray, (84, 84), interpolation=cv2.INTER_AREA)
+    return small.flatten()
 
+# ── manual colour test ─────────────────────────────────────────────
 if __name__ == "__main__":
-    # Test the capture
-    print("Testing screen capture...")
-    frame = capture_screen()
-    
-    if frame is not None:
-        print(f"Captured frame shape: {frame.shape}")
-        cv2.imshow("Captured Frame", frame)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
-    else:
-        print("Failed to capture frame")
+    img_bgr = capture_screen()
+    cv2.imshow("BGR test (red square should look red)", img_bgr)
+    cv2.waitKey(0); cv2.destroyAllWindows()
