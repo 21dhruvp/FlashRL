@@ -27,12 +27,12 @@ REWARD_LOG_DIR.mkdir(exist_ok=True, parents=True)
 STEP_PENALTY              = -0.01     # small negative for every frame
 TIME_PENALTY_FACTOR       = -0.002    # scaled by elapsed steps
 LEAVE_SPAWN_BONUS         =  20.0
-DISTANCE_COIN_SCALE       =   0.05    # per‑pixel improvement towards nearest coin
-COIN_COLLECT_REWARD       =  20.0
+DISTANCE_COIN_SCALE       =  0.05    # per‑pixel improvement towards nearest coin
+COIN_COLLECT_REWARD       =  30.0
 SECTION_BONUS             =  25.0     # hitting a green checkpoint tile
 LEVEL_COMPLETE_REWARD     =  60.0
-ENEMY_COLLISION_PENALTY   = -10.0
-RESPAWN_PENALTY           =  -5.0
+ENEMY_COLLISION_PENALTY   = -15.0
+RESPAWN_PENALTY           = -10.0
 WALL_CONTACT_PENALTY      =  -2.0
 NO_MOVE_BASE_PENALTY      =  -0.02    # grows exponentially with idle frames
 
