@@ -46,7 +46,7 @@ def main() -> None:
 
         while not done and steps < 1000:
             action = agent.act(state)
-            next_state, reward, done = env.step(action)
+            next_state, reward, done, info = env.step(action)   # 'info' holds the reward components
             agent.remember(state, action, reward, next_state, done)
             agent.replay(32)
 
