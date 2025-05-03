@@ -10,23 +10,22 @@ import torch.optim as optim
 
 
 class DQN(nn.Module):
-    """CUDA-accelerated 3‑layer fully connected network for state→Q‑values."""
-
     def __init__(self, input_dim: int, output_dim: int) -> None:
         super().__init__()
-        self.fc1 = nn.Linear(input_dim, 128)
-        self.fc2 = nn.Linear(128, 128)
-        self.fc3 = nn.Linear(128, output_dim)
-        
-        # Initialize weights for better convergence
-        nn.init.xavier_uniform_(self.fc1.weight)
-        nn.init.xavier_uniform_(self.fc2.weight)
-        nn.init.xavier_uniform_(self.fc3.weight)
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 256),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(256, output_dim),
+        )
+        self.net.apply(lambda m: nn.init.xavier_uniform_(m.weight) if isinstance(m, nn.Linear) else None)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        return self.fc3(x)
+        return self.net(x)
+
 
 
 class Agent:
