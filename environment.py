@@ -1,6 +1,17 @@
+"""
+environment.py – World's Hardest Game RL wrapper
+------------------------------------------------
+Crash‑proof: if the red player sprite is not detected in a frame, the
+environment re‑uses the last known position instead of raising IndexError.
+Reward shaping:
+  • step/time penalties
+  • distance‑to‑nearest‑coin shaping
+  • wall/idle exponential penalties
+  • coin, checkpoint, and level‑complete bonuses
+"""
+
 from __future__ import annotations
-import os, time, csv
-from pathlib import Path
+import os, time
 from typing import Tuple, Dict, List, Optional
 
 import cv2
@@ -16,266 +27,250 @@ try:
 except ImportError:
     _FAST_INPUT = False
 
-# ─── debug & logging settings ─────────────────────────────────────────────
-SHOW_DEBUG          = True
-DEBUG_INTERVAL      = 20          # frames between HUD refreshes
-LOG_REWARDS         = True        # export reward components each step
-REWARD_LOG_DIR      = Path("reward_logs")
-REWARD_LOG_DIR.mkdir(exist_ok=True, parents=True)
+# ─── debug settings ──────────────────────────────────────────────────
+SHOW_DEBUG      = True
+DEBUG_INTERVAL  = 20
+SCREENSHOT_DIR  = "screenshots"
+os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 
-# ─── reward constants ─────────────────────────────────────────────────────
-STEP_PENALTY              = -0.01     # small negative for every frame
-TIME_PENALTY_FACTOR       = -0.002    # scaled by elapsed steps
+# ─── reward constants ───────────────────────────────────────────────
+STEP_PENALTY              = -0.05
+TIME_PENALTY_FACTOR       = -0.01
 LEAVE_SPAWN_BONUS         =  20.0
-DISTANCE_COIN_SCALE       =  0.05    # per‑pixel improvement towards nearest coin
-COIN_COLLECT_REWARD       =  30.0
-SECTION_BONUS             =  25.0     # hitting a green checkpoint tile
+APPROACH_COIN_REWARD      =   0.5
+COIN_COLLECT_REWARD       =  20.0
+CHECKPOINT_BONUS          =  15.0
 LEVEL_COMPLETE_REWARD     =  60.0
-ENEMY_COLLISION_PENALTY   = -15.0
-RESPAWN_PENALTY           = -10.0
-WALL_CONTACT_PENALTY      =  -2.0
-NO_MOVE_BASE_PENALTY      =  -0.02    # grows exponentially with idle frames
+ENEMY_COLLISION_PENALTY   = -10.0
+RESPAWN_PENALTY           =  -5.0
+NO_MOVE_BASE_PENALTY      =  -0.02
 
-# ─── geometry (px) ────────────────────────────────────────────────────────
+# ─── geometry (px) ──────────────────────────────────────────────────
 ENEMY_HIT_RADIUS = 20
 GOAL_HIT_RADIUS  = 20
 COIN_HIT_RADIUS  = 20
 WALL_HIT_RADIUS  = 15
 SPAWN_RADIUS     = 25
 
-class Environment:
-    KEY_PRESS_DURATION   = 0.001
-    REGION_REFRESH_EVERY = 120
 
-    def __init__(self, *, epsilon: float = 0.0, log_prefix: str | None = None):
+class Environment:
+    KEY_PRESS_DURATION   = 0.001       # sec key held
+    REGION_REFRESH_EVERY = 100         # frames
+
+    def __init__(self, *, epsilon: float = 0.0):
         self.action_map = {0: "up", 1: "down", 2: "left", 3: "right"}
+        self.epsilon = epsilon
         self.region = get_ruffle_window_region()
 
-        # episode state -----------------------------------------------------
-        self.spawn_pos : Tuple[int,int] = (0,0)
-        self.start_goal: Tuple[int,int] = (0,0)
+        # episode‑state placeholders
+        self.spawn_pos : Tuple[int,int] = (0, 0)
+        self.start_pos : Tuple[int,int] = (0, 0)
+        self.goal_pos  : Tuple[int,int] = (0, 0)
         self.total_coins = 0
         self.collected   = 0
         self.prev_coin_dist: Optional[float] = None
         self.left_spawn  = False
-        self._visited_checkpoints: set[Tuple[int,int]] = set()
 
-        # motion tracking ---------------------------------------------------
+        # motion tracking
         self.prev_player_pos: Optional[np.ndarray] = None
-        self.last_player: Tuple[int,int] = (0,0)
+        self.last_player: Tuple[int,int] = (0, 0)
         self.no_move_counter = 0
 
-        # misc --------------------------------------------------------------
-        self._refresh_cnt = 0
-        self._dbg_cnt     = 0
-        self.episode_reward = 0.0
-        self.epsilon = epsilon
-        self.reward_history: list[dict] = []  # per‑step reward breakdowns
-        self._last_breakdown: dict[str,float] = {}
-        self._log_file: Optional[csv.DictWriter] = None
-        if LOG_REWARDS and log_prefix:
-            fp = open(REWARD_LOG_DIR / f"{log_prefix}_rewards.csv", "w", newline="")
-            self._log_file = csv.DictWriter(fp, fieldnames=[
-                "step", "r_step", "r_time", "r_coin", "r_collect", "r_section",
-                "r_idle", "r_wall", "r_enemy", "r_spawn", "r_done", "total"])
-            self._log_file.writeheader()
-
-        if SHOW_DEBUG:
-            cv2.namedWindow("Agent\xa0view", cv2.WINDOW_NORMAL)
-
-    # ───────────────────────── reset ────────────────────────────────
-    def reset(self):
-        self.region = get_ruffle_window_region()
-        frame   = capture_screen(self.region)
-        objs    = detect_objects(frame)
-
-        self.spawn_pos   = objs.get("player", [(0,0)])[0]
-        self.last_player = self.spawn_pos
-        self.start_goal  = self._find_start_goal(objs)
-
-        self.total_coins = len(objs.get("coin", []))
-        self.collected   = 0
-        self.prev_coin_dist = self._nearest_coin_dist(objs)
-        self.left_spawn  = False
-        self._visited_checkpoints.clear()
-
-        self.prev_player_pos = np.array(self.spawn_pos, dtype=np.float32)
-        self.no_move_counter = 0
+        # misc
         self._refresh_cnt = self._dbg_cnt = 0
         self.episode_reward = 0.0
-        self.reward_history.clear()
 
+    # ───────────────────────── reset ────────────────────────────────
+    def reset(self) -> np.ndarray:
+        self.region  = get_ruffle_window_region()
+        frame        = capture_screen(self.region)
+        objs         = detect_objects(frame)
+
+        # robust spawn retrieval
+        player_list  = objs.get("player", [])
+        self.spawn_pos = player_list[0] if player_list else (self.region["width"]//2,
+                                                             self.region["height"]//2)
+        self.last_player = self.spawn_pos
+
+        # find first checkpoint/finish as goal
+        self.start_pos, self.goal_pos = self._find_start_goal(objs)
+
+        self.total_coins      = len(objs.get("coin", []))
+        self.collected        = 0
+        self.prev_coin_dist   = self._nearest_coin_dist(objs)
+        self.left_spawn       = False
+        self.prev_player_pos  = np.array(self.spawn_pos, dtype=np.float32)
+        self.no_move_counter  = 0
+        self._refresh_cnt     = self._dbg_cnt = 0
+        self.episode_reward   = 0.0
         return self._state_from_objects(objs)
 
-    # ───────────────────────── step ─────────────────────────────────
-    def step(self, action:int):
+    # ───────────────────────── step ────────────────────────────────
+    def step(self, action: int):
         self._press_key(action)
 
+        # periodic window‑region refresh
         self._refresh_cnt += 1
         if self._refresh_cnt >= self.REGION_REFRESH_EVERY:
             self.region = get_ruffle_window_region()
             self._refresh_cnt = 0
 
-        frame   = capture_screen(self.region)
-        objs    = detect_objects(frame)
-
-        if SHOW_DEBUG and self._dbg_cnt % DEBUG_INTERVAL == 0:
-            self._show_debug(frame, objs)
-        self._dbg_cnt += 1
-
-        state  = self._state_from_objects(objs)
-        reward, done, breakdown = self._compute_reward(state, objs)
+        frame = capture_screen(self.region)
+        objs  = detect_objects(frame)
+        state = self._state_from_objects(objs)
+        reward, done = self._compute_reward(state, objs)
         self.episode_reward += reward
-        self._last_breakdown = breakdown
-        if LOG_REWARDS:
-            self.reward_history.append(breakdown)
-            if self._log_file:
-                self._log_file.writerow(breakdown)
 
-        return state, reward, done, breakdown  # info dict useful for monitors
+        # debug overlay / screenshots
+        if SHOW_DEBUG:
+            self._dbg_cnt += 1
+            if self._dbg_cnt % DEBUG_INTERVAL == 0:
+                self._show_debug(frame, objs)
 
-    # ─────────────────── key press helper ───────────────────────────
-    def _press_key(self, action:int):
+        return state, reward, done, {
+            "step_penalty": STEP_PENALTY,
+            "time_penalty": TIME_PENALTY_FACTOR,
+            "coins": self.collected,
+            "episode_reward": self.episode_reward,
+        }
+
+    # ─────────────────── key‑press helper ───────────────────────────
+    def _press_key(self, action: int):
         key = self.action_map[action]
         injector = pydirectinput if _FAST_INPUT else pyautogui
-        injector.keyDown(key); time.sleep(self.KEY_PRESS_DURATION); injector.keyUp(key)
+        injector.keyDown(key)
+        time.sleep(self.KEY_PRESS_DURATION)
+        injector.keyUp(key)
 
     # ─────────────────── state encoding ─────────────────────────────
-    def _state_from_objects(self, objs:Dict[str,List[Tuple[int,int]]]) -> np.ndarray:
-        w,h = self.region["width"], self.region["height"]
+    def _state_from_objects(self, objs: Dict[str, List[Tuple[int, int]]]) -> np.ndarray:
+        w, h = self.region["width"], self.region["height"]
 
-        # robust player retrieval ------------------------------------------
+        # robust player retrieval
         player_list = objs.get("player", [])
         if player_list:
             player = player_list[0]
-            self.last_player = player            # update cache
+            self.last_player = player
         else:
-            player = self.last_player            # reuse last valid position
+            player = self.last_player
 
+        # simple target: farthest goal from spawn (encourages progress)
         goals = objs.get("goal", [])
         if goals:
-            target = max(goals, key=lambda g: np.linalg.norm(np.array(g)-np.array(self.start_goal)))
+            target = max(goals, key=lambda g: np.linalg.norm(np.array(g) - np.array(self.start_pos)))
         else:
             target = player
-        return np.array([player[0]/w, player[1]/h, target[0]/w, target[1]/h], dtype=np.float32)
+
+        return np.array([player[0] / w, player[1] / h,
+                         target[0] / w, target[1] / h],
+                        dtype=np.float32)
 
     # ─────────────────── reward function ────────────────────────────
-    def _compute_reward(self, s:np.ndarray, objs):
-        """Return (total, done, breakdown_dict)."""
-        w,h = self.region["width"], self.region["height"]
-        pxy = np.array([s[0]*w, s[1]*h])
+    def _compute_reward(self, s: np.ndarray, objs):
+        w, h = self.region["width"], self.region["height"]
+        pxy  = np.array([s[0] * w, s[1] * h])
 
-        breakdown = {
-            "step": self._dbg_cnt,
-            "r_step": STEP_PENALTY,
-            "r_time": TIME_PENALTY_FACTOR * self._dbg_cnt,
-            "r_coin": 0.0,
-            "r_collect": 0.0,
-            "r_section": 0.0,
-            "r_idle": 0.0,
-            "r_wall": 0.0,
-            "r_enemy": 0.0,
-            "r_spawn": 0.0,
-            "r_done": 0.0,
-            "total": 0.0,
-        }
-        reward = breakdown["r_step"] + breakdown["r_time"]
+        reward = STEP_PENALTY + TIME_PENALTY_FACTOR
         done   = False
 
-        # enemy collision ---------------------------------------------------
-        if any(np.linalg.norm(pxy-e)<ENEMY_HIT_RADIUS for e in objs.get("enemy",[])):
-            breakdown["r_enemy"] = ENEMY_COLLISION_PENALTY
-            reward += breakdown["r_enemy"]
-
-        # respawn detection -------------------------------------------------
-        if self.left_spawn and np.linalg.norm(pxy-np.array(self.spawn_pos)) < SPAWN_RADIUS:
-            breakdown["r_spawn"] = RESPAWN_PENALTY
-            reward += breakdown["r_spawn"]
+        # --- collisions ----------------------------------------------------
+        if any(np.linalg.norm(pxy - e) < ENEMY_HIT_RADIUS for e in objs.get("enemy", [])):
+            reward += ENEMY_COLLISION_PENALTY
+        if any(np.linalg.norm(pxy - self.spawn_pos) > SPAWN_RADIUS and
+               np.linalg.norm(pxy - e) < ENEMY_HIT_RADIUS for e in objs.get("enemy", [])):
+            reward += RESPAWN_PENALTY
             self.collected = 0
             self.left_spawn = False
             self.no_move_counter = 0
 
-        if (not self.left_spawn and np.linalg.norm(pxy-np.array(self.spawn_pos)) > SPAWN_RADIUS):
+        # --- left spawn check ----------------------------------------------
+        if (not self.left_spawn and
+            np.linalg.norm(pxy - np.array(self.spawn_pos)) > SPAWN_RADIUS):
             self.left_spawn = True
             reward += LEAVE_SPAWN_BONUS
 
-        # coin distance shaping --------------------------------------------
+        # --- coin shaping --------------------------------------------------
         coin_dist = self._nearest_coin_dist(objs)
-        if coin_dist is not None and self.prev_coin_dist is not None:
-            delta = self.prev_coin_dist - coin_dist  # positive when moving closer
-            breakdown["r_coin"] = DISTANCE_COIN_SCALE * delta
-            reward += breakdown["r_coin"]
-        self.prev_coin_dist = coin_dist
+        if coin_dist is not None:
+            if self.prev_coin_dist is not None and coin_dist < self.prev_coin_dist - 1:
+                reward += APPROACH_COIN_REWARD
+            self.prev_coin_dist = coin_dist
 
-        # coin collection reward -------------------------------------------
+        # --- coin collected ------------------------------------------------
         coins_left = len(objs.get("coin", []))
         if coins_left < self.total_coins - self.collected:
             self.collected = self.total_coins - coins_left
-            breakdown["r_collect"] = COIN_COLLECT_REWARD
-            reward += breakdown["r_collect"]
+            reward += COIN_COLLECT_REWARD
 
-        # checkpoint / section bonus ---------------------------------------
+        # --- checkpoint bonus ---------------------------------------------
         for g in objs.get("goal", []):
-            if np.linalg.norm(pxy-g) < GOAL_HIT_RADIUS and g not in self._visited_checkpoints:
-                self._visited_checkpoints.add(g)
-                breakdown["r_section"] += SECTION_BONUS
-                reward += SECTION_BONUS
+            if np.linalg.norm(pxy - g) < GOAL_HIT_RADIUS and g != self.goal_pos:
+                reward += CHECKPOINT_BONUS
 
-        # level completion --------------------------------------------------
-        if (self.collected == self.total_coins and any(np.linalg.norm(pxy-g)<GOAL_HIT_RADIUS for g in objs.get("goal",[]))):
-            breakdown["r_done"] = LEVEL_COMPLETE_REWARD
+        # --- level complete ------------------------------------------------
+        if (self.collected == self.total_coins and
+            any(np.linalg.norm(pxy - g) < GOAL_HIT_RADIUS for g in objs.get("goal", []))):
             reward += LEVEL_COMPLETE_REWARD
             done = True
 
-        # idle / wall penalties --------------------------------------------
-        move = np.linalg.norm(pxy - self.prev_player_pos) if self.prev_player_pos is not None else 1
-        wall_contact = any(np.linalg.norm(pxy-w_)<WALL_HIT_RADIUS for w_ in objs.get("wall",[]))
-        if wall_contact:
-            breakdown["r_wall"] = WALL_CONTACT_PENALTY
-            reward += breakdown["r_wall"]
-        if move < 1.0:
+        # --- wall / idle exponential penalty ------------------------------
+        move = (np.linalg.norm(pxy - self.prev_player_pos)
+                if self.prev_player_pos is not None else 1)
+        wall = any(np.linalg.norm(pxy - w_) < WALL_HIT_RADIUS for w_ in objs.get("wall", []))
+        if move < 1.0 or wall:
             self.no_move_counter += 1
-            idle_pen = NO_MOVE_BASE_PENALTY * (2 ** (self.no_move_counter-1))
-            breakdown["r_idle"] = idle_pen
-            reward += idle_pen
+            reward += NO_MOVE_BASE_PENALTY * (2 ** (self.no_move_counter - 1))
         else:
             self.no_move_counter = 0
         self.prev_player_pos = pxy
 
-        breakdown["total"] = reward
-        return float(reward), done, breakdown
+        return float(reward), done
 
     # ─────────────────── helper utilities ───────────────────────────
     def _find_start_goal(self, objs):
-        goals = objs.get("goal", [])
-        if not goals:
-            return (0,0)
-        return min(goals, key=lambda g: np.linalg.norm(np.array(g)-np.array(self.spawn_pos)))
+        """Return (start_pos, goal_pos) or sensible fallbacks."""
+        checkpoints = objs.get("goal", [])
+        if checkpoints:
+            goal = min(checkpoints,
+                       key=lambda g: np.linalg.norm(np.array(g) - np.array(self.spawn_pos)))
+            return self.spawn_pos, goal
+        # fallback: treat centre as goal
+        w, h = self.region["width"], self.region["height"]
+        return self.spawn_pos, (w // 2, h // 2)
 
-    def _nearest_coin_dist(self, objs)->Optional[float]:
+    def _nearest_coin_dist(self, objs) -> Optional[float]:
         player = self.last_player
         coins  = objs.get("coin", [])
         if not coins:
             return None
-        return min(np.linalg.norm(np.array(player)-np.array(c)) for c in coins)
+        return min(np.linalg.norm(np.array(player) - np.array(c)) for c in coins)
 
     # ─────────────────── debug overlay ──────────────────────────────
     def _show_debug(self, frame, objs):
         dbg = frame.copy()
-        for x,y in objs.get("player",[]): cv2.drawMarker(dbg,(x,y),(0,0,255),cv2.MARKER_CROSS,2)
-        for x,y in objs.get("enemy", []): cv2.circle(dbg,(x,y),6,(255,0,0),1)
-        for x,y in objs.get("coin" , []): cv2.circle(dbg,(x,y),4,(0,255,255),1)
-        for x,y in objs.get("goal" , []): cv2.rectangle(dbg,(x-3,y-3),(x+3,y+3),(0,255,0),1)
+        for x, y in objs.get("player", []):
+            cv2.drawMarker(dbg, (x, y), (0, 0, 255), cv2.MARKER_CROSS, 2)
+        for x, y in objs.get("enemy", []):
+            cv2.circle(dbg, (x, y), 6, (255, 0, 0), 1)
+        for x, y in objs.get("coin", []):
+            cv2.circle(dbg, (x, y), 4, (0, 255, 255), 1)
+        for x, y in objs.get("goal", []):
+            cv2.rectangle(dbg, (x - 3, y - 3), (x + 3, y + 3), (0, 255, 0), 1)
 
         hud = [
-            f"R_step {self._last_breakdown.get('total',0):+6.1f}",
-            f"R_tot  {self.episode_reward:+7.1f}",
-            f"Coins  {self.collected}/{self.total_coins}",
+            f"R_tot {self.episode_reward:+7.1f}",
+            f"Coins {self.collected}/{self.total_coins}",
             f"ε {self.epsilon:.2f}",
-            f"Step {self._dbg_cnt}"
+            f"Step {self._dbg_cnt}",
         ]
-        for i,t in enumerate(hud):
-            cv2.putText(dbg,t,(10,20+20*i),cv2.FONT_HERSHEY_SIMPLEX,0.5,(255,255,255),1,cv2.LINE_AA)
+        for i, t in enumerate(hud):
+            cv2.putText(dbg, t, (10, 20 + 20 * i), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5, (255, 255, 255), 1, cv2.LINE_AA)
 
-        cv2.imshow("Agent\xa0view", dbg); cv2.waitKey(1)
-        cv2.imwrite(os.path.join("screenshots",f"dbg_{int(time.time()*1000)}.png"),dbg)
+        cv2.imshow("Agent View", dbg)
+        if cv2.waitKey(1) & 0xFF == 27:  # Esc to quit debug display
+            cv2.destroyAllWindows()
+
+        # periodic screenshot
+        if self._dbg_cnt % (DEBUG_INTERVAL * 10) == 0:
+            cv2.imwrite(os.path.join(SCREENSHOT_DIR, f"dbg_{self._dbg_cnt:06d}.png"), dbg)
