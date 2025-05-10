@@ -1,6 +1,9 @@
 import time
 from typing import Dict
 
+import bettercam
+camera = bettercam.create()
+
 import cv2
 import mss
 import numpy as np
@@ -27,16 +30,21 @@ def capture_screen(region=None, retries=3):
 
     if region is None:
         region = get_ruffle_window_region()
+    
+    # bettercam wants a (x, y, w, h) tuple
+    rect = (region["left"], region["top"], region["width"], region["height"])
 
     for i in range(retries):
         try:
-            with mss.mss() as sct:
-                shot = sct.grab(region)               # BGRA buffer
-                bgr  = np.frombuffer(shot.raw, np.uint8)  # raw = BGRA
-                bgr  = bgr.reshape(shot.height, shot.width, 4)[:, :, :3]
-                return bgr
+            frame = camera.grab()  # full screen
+            if frame is not None:
+                y1 = region["top"]
+                y2 = y1 + region["height"]
+                x1 = region["left"]
+                x2 = x1 + region["width"]
+                return frame[y1:y2, x1:x2]
         except Exception as e:
-            print(f"[mss] grab attempt {i+1} failed → {e}")
+            print(f"[bettercam] capture attempt {i+1} failed → {e}")
             time.sleep(0.05)
 
     return np.zeros((region['height'], region['width'], 3), np.uint8)
