@@ -14,6 +14,10 @@ from __future__ import annotations
 import os, time
 from typing import Tuple, Dict, List, Optional
 
+import ctypes
+import ctypes.wintypes as wintypes
+
+
 import cv2
 import numpy as np
 import pyautogui
@@ -27,9 +31,30 @@ try:
 except ImportError:
     _FAST_INPUT = False
 
+VK = {'up': 0x26, 'down': 0x28, 'left': 0x25, 'right': 0x27}
+
+PUL = ctypes.POINTER(ctypes.c_ulong)
+
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [
+        ("wVk", wintypes.WORD),
+        ("wScan", wintypes.WORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", PUL)
+    ]
+
+class INPUT(ctypes.Structure):
+    class _INPUT(ctypes.Union):
+        _fields_ = [("ki", KEYBDINPUT)]
+    _anonymous_ = ("u",)
+    _fields_ = [("type", wintypes.DWORD), ("u", _INPUT)]
+
+SendInput = ctypes.windll.user32.SendInput
+
 # ─── debug settings ──────────────────────────────────────────────────
 SHOW_DEBUG      = True
-DEBUG_INTERVAL  = 20
+DEBUG_INTERVAL  = 25
 SCREENSHOT_DIR  = "screenshots"
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 
@@ -61,6 +86,9 @@ class Environment:
         self.action_map = {0: "up", 1: "down", 2: "left", 3: "right"}
         self.epsilon = epsilon
         self.region = get_ruffle_window_region()
+        
+        self._held_key: Optional[str] = None
+
 
         # episode‑state placeholders
         self.spawn_pos : Tuple[int,int] = (0, 0)
@@ -103,19 +131,25 @@ class Environment:
         self.no_move_counter  = 0
         self._refresh_cnt     = self._dbg_cnt = 0
         self.episode_reward   = 0.0
+        
+        if self._held_key is not None:
+            self._send_input(VK[self._held_key], key_down=False)
+            self._held_key = None
+        
         return self._state_from_objects(objs)
 
     # ───────────────────────── step ────────────────────────────────
     def step(self, action: int):
         self._press_key(action)
-
+        
         # periodic window‑region refresh
         self._refresh_cnt += 1
         if self._refresh_cnt >= self.REGION_REFRESH_EVERY:
             self.region = get_ruffle_window_region()
             self._refresh_cnt = 0
-
+        
         frame = capture_screen(self.region)
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         objs  = detect_objects(frame)
         state = self._state_from_objects(objs)
         reward, done = self._compute_reward(state, objs)
@@ -126,7 +160,7 @@ class Environment:
             self._dbg_cnt += 1
             if self._dbg_cnt % DEBUG_INTERVAL == 0:
                 self._show_debug(frame, objs)
-
+    
         return state, reward, done, {
             "step_penalty": STEP_PENALTY,
             "time_penalty": TIME_PENALTY_FACTOR,
@@ -137,10 +171,26 @@ class Environment:
     # ─────────────────── key‑press helper ───────────────────────────
     def _press_key(self, action: int):
         key = self.action_map[action]
-        injector = pydirectinput if _FAST_INPUT else pyautogui
-        injector.keyDown(key)
-        time.sleep(self.KEY_PRESS_DURATION)
-        injector.keyUp(key)
+        vk = VK[key]
+
+        if key == self._held_key:
+            return  # already pressed
+
+        # release old key
+        if self._held_key is not None:
+            self._send_input(VK[self._held_key], key_down=False)
+
+        # press new key
+        self._send_input(vk, key_down=True)
+        self._held_key = key
+
+
+    def _send_input(self, vk: int, key_down: bool):
+        KEYEVENTF_KEYUP = 0x0002
+
+        flags = 0 if key_down else KEYEVENTF_KEYUP
+        ctypes.windll.user32.keybd_event(vk, 0, flags, 0)
+
 
     # ─────────────────── state encoding ─────────────────────────────
     def _state_from_objects(self, objs: Dict[str, List[Tuple[int, int]]]) -> np.ndarray:
