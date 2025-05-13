@@ -57,7 +57,7 @@ def main() -> None:
         print(f"Episode {ep:04d} | Reward {total_reward:7.2f} | Steps {steps}")
 
         if ep % CHECKPOINT_EVERY == 0:
-            ckpt_path = CHECKPOINT_DIR / f"agent_ep{ep}.h5"
+            ckpt_path = CHECKPOINT_DIR / f"agent_ep{ep}"
             agent.save(str(ckpt_path))
             print(f"[train] Saved checkpoint → {ckpt_path}")
 
