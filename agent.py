@@ -19,8 +19,9 @@ class Actor(nn.Module):
         )
 
     def forward(self, state):
-        print(state)
-        return self.fc(state)
+        logits = self.fc(state)
+        probs = torch.clamp(logits, min=1e-8, max=1.0)  # Clamp probabilities
+        return probs
 
 class Critic(nn.Module):
     def __init__(self, state_dim: int):
@@ -68,7 +69,7 @@ class Agent:
         # optimisers
         self.optimizer_actor = optim.Adam(self.actor.parameters(), lr=lr_actor)
         self.optimizer_critic = optim.Adam(self.critic.parameters(), lr=lr_critic)
-        self.scaler = torch.cuda.amp.GradScaler(enabled=self.device.type == 'cuda')
+        self.scaler = torch.cuda.amp.GradScaler('cuda')
 
         # Warmup CUDA (first call is slower)
         if 'cuda' in str(self.device):
