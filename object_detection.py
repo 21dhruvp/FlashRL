@@ -11,7 +11,7 @@ B_ENEMY_LO,B_ENEMY_HI = (240, 0, 0), (255, 30, 30)
 Y_COIN_LO, Y_COIN_HI = (0,255, 255), (0,255, 255)
 G_GOAL_LO, G_GOAL_HI = (180,254, 181), (180,254, 181)
 
-_MIN_AREA = {"player": 30, "enemy": 10, "coin": 10, "goal": 20}
+_MIN_AREA = {"player": 30, "enemy": 9, "coin": 10, "goal": 20}
 
 def _centroids(mask: np.ndarray, min_area: int) -> List[Tuple[int, int]]:
     centroids = []
