@@ -56,25 +56,25 @@ os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 # ─── reward constants ─────────────────────────────────────────────
 STEP_PENALTY = -0.002
 TIME_PENALTY_FACTOR = -0.001
-LEAVE_SPAWN_BONUS = 0.0
+LEAVE_SPAWN_BONUS = 10.0
 APPROACH_COIN_REWARD = 5.0
 COIN_COLLECT_REWARD = 500.0
 CHECKPOINT_BONUS = 250.0
 LEVEL_COMPLETE_REWARD = 8000.0
-ENEMY_PROX_PENALTY = -3.0
+ENEMY_PROX_PENALTY = -2.7
 ENEMY_PROX_THRESHOLD = 80
-ENEMY_COLLISION_PENALTY = -120.0
+ENEMY_COLLISION_PENALTY = -80.0
 RESPAWN_PENALTY = -50.0
 NO_MOVE_BASE_PENALTY = -3.0
-OUTSIDE_SPAWN_REWARD = 1.0
-INSIDE_SPAWN_PENALTY = -1.5
+OUTSIDE_SPAWN_REWARD = 4.5
+INSIDE_SPAWN_PENALTY = -3.3
 
 
 # ─── geometry (px) ────────────────────────────────────────────────
 ENEMY_HIT_RADIUS = 20
 GOAL_HIT_RADIUS = 20
 COIN_HIT_RADIUS = 20
-WALL_HIT_RADIUS = 15
+WALL_HIT_RADIUS = 20
 SPAWN_RADIUS = 25
 
 
@@ -278,6 +278,7 @@ class Environment:
             if not self.left_spawn:          # first time leaving
                 self.left_spawn = True
                 reward += LEAVE_SPAWN_BONUS
+                print("Left spawn, bonus added:", reward)
             reward += OUTSIDE_SPAWN_REWARD   # every step while outside
 
 
@@ -293,6 +294,7 @@ class Environment:
         if coins_left < self.total_coins - self.collected:
             self.collected = self.total_coins - coins_left
             reward += COIN_COLLECT_REWARD
+            print("Coin Collected!")
 
         # --- checkpoint bonus ---------------------------------------------
         for g in objs.get("goal", []):
@@ -316,7 +318,6 @@ class Environment:
         else:
             self.no_move_counter = 0
 
-        # ⬇️ add these two lines ⬇️
         self.prev_player_pos = pxy
         return float(reward), done
 
