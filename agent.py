@@ -39,8 +39,8 @@ class Agent:
         gamma: float = 0.97,
         epsilon_start: float = 1.0,
         epsilon_min: float = 0.1,
-        epsilon_decay: float = 0.995,
-        lr: float = 0.001,
+        epsilon_decay: float = 0.99,
+        lr: float = 0.0001,
     ) -> None:
         self.state_dim = state_dim
         self.action_dim = action_dim

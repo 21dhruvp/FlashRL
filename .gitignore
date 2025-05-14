@@ -2,3 +2,4 @@ screenshots/
 models/
 __pycache__/
 backup/
+venv/

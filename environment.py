@@ -59,16 +59,16 @@ SCREENSHOT_DIR  = "screenshots"
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 
 # ─── reward constants ───────────────────────────────────────────────
-STEP_PENALTY              = -0.05
+STEP_PENALTY              = -0.2
 TIME_PENALTY_FACTOR       = -0.01
 LEAVE_SPAWN_BONUS         =  20.0
 APPROACH_COIN_REWARD      =   0.5
-COIN_COLLECT_REWARD       =  20.0
-CHECKPOINT_BONUS          =  15.0
+COIN_COLLECT_REWARD       =  30.0
+CHECKPOINT_BONUS          =  10.0
 LEVEL_COMPLETE_REWARD     =  60.0
-ENEMY_COLLISION_PENALTY   = -10.0
-RESPAWN_PENALTY           =  -5.0
-NO_MOVE_BASE_PENALTY      =  -0.02
+ENEMY_COLLISION_PENALTY   = -30.0
+RESPAWN_PENALTY           =  -15.0
+NO_MOVE_BASE_PENALTY      =  -1
 
 # ─── geometry (px) ──────────────────────────────────────────────────
 ENEMY_HIT_RADIUS = 20
@@ -269,7 +269,7 @@ class Environment:
         wall = any(np.linalg.norm(pxy - w_) < WALL_HIT_RADIUS for w_ in objs.get("wall", []))
         if move < 1.0 or wall:
             self.no_move_counter += 1
-            reward += NO_MOVE_BASE_PENALTY * (2 ** (self.no_move_counter - 1))
+            reward += NO_MOVE_BASE_PENALTY * self.no_move_counter
         else:
             self.no_move_counter = 0
         self.prev_player_pos = pxy
